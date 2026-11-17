@@ -1,13 +1,15 @@
-"""gta6-twitch-ccu-forecast-01 forecaster in Python 3.13 (standard library only).
+"""gta6-twitch-ccu-forecast-01 forecaster v2 in Python 3.13 (standard library only).
 
-Learns the empirical release-day shape (hourly log-ratios relative to hour 1) from comparables
-provided in the case data, and applies robust spread estimation for quantile forecasts.
+Learns the empirical release-day shape (hourly log-ratios relative to hour 1) from console-only
+comparables (PS5/Xbox/Switch exclusive launches with no PC) provided in the case data,
+and applies robust spread estimation for quantile forecasts.
 """
 
 import json
 import math
 import os
 from pathlib import Path
+from datetime import datetime, timedelta
 
 INPUT_DIR = Path(os.environ.get("MAKEFUN_INPUT_DIR", "/input"))
 OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
@@ -23,11 +25,14 @@ def round2(x: float) -> float | int:
     value = whole / 100
     return int(value) if value.is_integer() else value
 
-def extract_pseudo_comparables(comparables):
+def extract_console_comparables(comparables):
     cases = []
     for comp in comparables:
         name = comp.get('name', '')
         if 'Grand Theft Auto' in name:
+            continue
+        platforms = str(comp.get('platforms', '')).lower()
+        if 'pc' in platforms:
             continue
         day_start = comp.get('day_start')
         hourly = comp.get('hourly', [])
@@ -45,7 +50,6 @@ def extract_pseudo_comparables(comparables):
             day_start_actual = p1_row['from']
             p1_val = p1_row['viewers']
             actuals = {}
-            from datetime import datetime, timedelta
             try:
                 dt = datetime.fromisoformat(day_start_actual.replace('Z', '+00:00'))
                 for h in range(2, 25):
@@ -57,7 +61,6 @@ def extract_pseudo_comparables(comparables):
                 continue
         else:
             actuals = {}
-            from datetime import datetime, timedelta
             try:
                 dt = datetime.fromisoformat(day_start.replace('Z', '+00:00'))
                 for h in range(2, 25):
@@ -81,7 +84,7 @@ def forecast_case(case: dict, name: str) -> dict:
     p1 = max(1.0, float(first["viewers"]))
 
     comparables = case.get("comparables", [])
-    pseudo_cases = extract_pseudo_comparables(comparables)
+    pseudo_cases = extract_console_comparables(comparables)
 
     log_ratios_by_hour = {h: [] for h in range(2, 25)}
     for c in pseudo_cases:
@@ -103,9 +106,9 @@ def forecast_case(case: dict, name: str) -> dict:
             n = len(s_lrs)
             med = s_lrs[n//2] if n%2 != 0 else (s_lrs[n//2-1] + s_lrs[n//2]) / 2.0
             median_lr[h] = med
-            abs_devs = sorted([abs(x - med) for x in s_lrs])
-            mean_abs = sum(abs_devs) / len(abs_devs)
-            spread_sigma[h] = max(0.12, mean_abs * 1.15)
+            abs_devs = [abs(x - med) for x in s_lrs]
+            mean_abs = sum(abs_devs) / len(abs_devs) if abs_devs else 0.1
+            spread_sigma[h] = max(0.10, mean_abs * 1.30)
         else:
             median_lr[h] = 0.0
             spread_sigma[h] = 0.15 * math.sqrt(h - 1)
@@ -117,7 +120,6 @@ def forecast_case(case: dict, name: str) -> dict:
         sig = spread_sigma.get(h, 0.15 * math.sqrt(h - 1))
         median_val = p1 * math.exp(r)
         qs = [round2(max(1.0, min(1e9, median_val * math.exp(z * sig)))) for z in Z]
-        # Ensure non-decreasing
         for i in range(1, len(qs)):
             if qs[i] < qs[i-1]:
                 qs[i] = qs[i-1]
